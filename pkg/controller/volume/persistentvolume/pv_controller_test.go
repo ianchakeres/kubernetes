@@ -90,6 +90,86 @@ func TestControllerSync(t *testing.T) {
 				return nil
 			},
 		},
+	}
+
+	for _, test := range tests {
+		glog.V(4).Infof("starting test %q", test.name)
+
+		// Initialize the controller
+		client := &fake.Clientset{}
+
+		fakeVolumeWatch := watch.NewFake()
+		client.PrependWatchReactor("persistentvolumes", core.DefaultWatchReactor(fakeVolumeWatch, nil))
+		fakeClaimWatch := watch.NewFake()
+		client.PrependWatchReactor("persistentvolumeclaims", core.DefaultWatchReactor(fakeClaimWatch, nil))
+		fakePodWatch := watch.NewFake()
+		client.PrependWatchReactor("pods", core.DefaultWatchReactor(fakePodWatch, nil))
+		client.PrependWatchReactor("storageclasses", core.DefaultWatchReactor(watch.NewFake(), nil))
+
+		informers := informers.NewSharedInformerFactory(client, controller.NoResyncPeriodFunc())
+		ctrl, err := newTestController(client, informers, true)
+		if err != nil {
+			t.Fatalf("Test %q construct persistent volume failed: %v", test.name, err)
+		}
+
+		reactor := newVolumeReactor(client, ctrl, fakeVolumeWatch, fakeClaimWatch, fakePodWatch, test.errors)
+		for _, claim := range test.initialClaims {
+			reactor.claims[claim.Name] = claim
+			go func(claim *v1.PersistentVolumeClaim) {
+				fakeClaimWatch.Add(claim)
+			}(claim)
+		}
+		for _, volume := range test.initialVolumes {
+			reactor.volumes[volume.Name] = volume
+			go func(volume *v1.PersistentVolume) {
+				fakeVolumeWatch.Add(volume)
+			}(volume)
+		}
+		for _, pod := range test.initialPods {
+			reactor.pods[pod.Name] = pod
+			go func(pod *v1.Pod) {
+				fakePodWatch.Add(pod)
+			}(pod)
+		}
+
+		// Start the controller
+		stopCh := make(chan struct{})
+		informers.Start(stopCh)
+		go ctrl.Run(stopCh)
+
+		// Wait for the controller to pass initial sync and fill its caches.
+		for !ctrl.volumeListerSynced() ||
+			!ctrl.claimListerSynced() ||
+			len(ctrl.claims.ListKeys()) < len(test.initialClaims) ||
+			len(ctrl.volumes.store.ListKeys()) < len(test.initialVolumes) {
+
+			time.Sleep(10 * time.Millisecond)
+		}
+		glog.V(4).Infof("controller synced, starting test")
+
+		// Call the tested function
+		err = test.test(ctrl, reactor, test)
+		if err != nil {
+			t.Errorf("Test %q initial test call failed: %v", test.name, err)
+		}
+		// Simulate a periodic resync, just in case some events arrived in a
+		// wrong order.
+		ctrl.claims.Resync()
+		ctrl.volumes.store.Resync()
+
+		err = reactor.waitTest(test)
+		if err != nil {
+			t.Errorf("Failed to run test %s: %v", test.name, err)
+		}
+		close(stopCh)
+
+		evaluateTestResults(ctrl, reactor, test, t)
+	}
+}
+
+
+func TestDeleteActiveClaim(t *testing.T) {
+	tests := []controllerTest{
 		{
 			// attempt to deleteClaim with a bound claim to active pod, claim should not be deleted
 			"5-5 - attempt to delete claim associated with active pod",
@@ -98,6 +178,23 @@ func TestControllerSync(t *testing.T) {
 			newClaimArray("claim5-5", "uid5-5", "1Gi", "volume5-5", v1.ClaimBound, nil, annBoundByController, annBindCompleted),
 			newClaimArray("claim5-5", "uid5-5", "1Gi", "volume5-5", v1.ClaimBound, nil, annBoundByController, annBindCompleted),
 			newPodArray("pod5-5", "volume5-5", v1.PodRunning, nil),
+			[]string{"Normal Claim not deleted"}, noerrors,
+			// Custom test function that generates a delete event
+			func(ctrl *PersistentVolumeController, reactor *volumeReactor, test controllerTest) error {
+				obj := ctrl.claims.List()[0]
+				claim := obj.(*v1.PersistentVolumeClaim)
+				ctrl.deleteClaim(claim)
+				return nil
+			},
+		},
+		{
+			// attempt to deleteClaim with a bound claim to active pod, claim should not be deleted
+			"5-5 - attempt to delete claim associated with active pod",
+			newVolumeArray("volume5-6", "1Gi", "uid5-6", "claim5-6", v1.VolumeBound, v1.PersistentVolumeReclaimRetain, classEmpty, annBoundByController),
+			newVolumeArray("volume5-6", "1Gi", "uid5-6", "claim5-6", v1.VolumeBound, v1.PersistentVolumeReclaimRetain, classEmpty, annBoundByController),
+			newClaimArray("claim5-6", "uid5-6", "1Gi", "volume5-6", v1.ClaimBound, nil, annBoundByController, annBindCompleted),
+			newClaimArray("claim5-6", "uid5-6", "1Gi", "volume5-6", v1.ClaimBound, nil, annBoundByController, annBindCompleted),
+			newPodArray("pod5-6", "volume5-6", v1.PodPending, nil),
 			[]string{"Normal Claim not deleted"}, noerrors,
 			// Custom test function that generates a delete event
 			func(ctrl *PersistentVolumeController, reactor *volumeReactor, test controllerTest) error {
@@ -183,6 +280,8 @@ func TestControllerSync(t *testing.T) {
 		evaluateTestResults(ctrl, reactor, test, t)
 	}
 }
+
+
 
 func storeVersion(t *testing.T, prefix string, c cache.Store, version string, expectedReturn bool) {
 	pv := newVolume("pvName", "1Gi", "", "", v1.VolumeAvailable, v1.PersistentVolumeReclaimDelete, classEmpty)
