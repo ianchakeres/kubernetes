@@ -61,6 +61,7 @@ type ControllerParameters struct {
 	ClusterName               string
 	VolumeInformer            coreinformers.PersistentVolumeInformer
 	ClaimInformer             coreinformers.PersistentVolumeClaimInformer
+	PodInformer               coreinformers.PodInformer
 	ClassInformer             storageinformers.StorageClassInformer
 	EventRecorder             record.EventRecorder
 	EnableDynamicProvisioning bool
@@ -115,6 +116,9 @@ func NewController(p ControllerParameters) (*PersistentVolumeController, error) 
 	)
 	controller.claimLister = p.ClaimInformer.Lister()
 	controller.claimListerSynced = p.ClaimInformer.Informer().HasSynced
+
+	controller.podLister = p.PodInformer.Lister()
+	controller.podListerSynced = p.PodInformer.Informer().HasSynced
 
 	controller.classLister = p.ClassInformer.Lister()
 	controller.classListerSynced = p.ClassInformer.Informer().HasSynced
@@ -251,6 +255,33 @@ func (ctrl *PersistentVolumeController) updateClaim(claim *v1.PersistentVolumeCl
 
 // deleteClaim runs in worker thread and handles "claim deleted" event.
 func (ctrl *PersistentVolumeController) deleteClaim(claim *v1.PersistentVolumeClaim) {
+	// prevent deletion of a pvc that is bound to a pv
+	// if the pv is used by an active pod
+	// issue #45143
+
+	//check if pvc is bound to pv and associated pv name exists
+	if claim != nil && claim.Status.Phase == v1.ClaimBound && claim.Spec.VolumeName != "" {
+		//find the associated pv and check
+		volume, volumeErr := ctrl.kubeClient.Core().PersistentVolumes().Get(claim.Spec.VolumeName, metav1.GetOptions{})
+		if volumeErr == nil {
+			//check all running and pending pods for this volume
+			pods, podErr := ctrl.podLister.List(labels.Everything())
+			if podErr == nil {
+				for _, pod := range pods {
+					if pod.Status.Phase == v1.PodRunning || pod.Status.Phase == v1.PodPending {
+						for _, podVolume := range pod.Spec.Volumes {
+							if podVolume.Name == claim.Spec.VolumeName {
+								//we found that this pvc uses a pv that is used by an running or pending pod
+								ctrl.eventRecorder.Event(claim, v1.EventTypeNormal, "Claim not deleted", "")
+								glog.Infof("claim %q:%q not deleted because it is associated with volume %q used by active pod %q:%q", claimToClaimKey(claim), claim.Spec.VolumeName, volume.Name, pod.Namespace, pod.Name)
+								return
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 	_ = ctrl.claims.Delete(claim)
 	glog.V(4).Infof("claim %q deleted", claimToClaimKey(claim))
 
@@ -271,7 +302,7 @@ func (ctrl *PersistentVolumeController) Run(stopCh <-chan struct{}) {
 	glog.Infof("Starting persistent volume controller")
 	defer glog.Infof("Shutting down peristent volume controller")
 
-	if !controller.WaitForCacheSync("persistent volume", stopCh, ctrl.volumeListerSynced, ctrl.claimListerSynced, ctrl.classListerSynced) {
+	if !controller.WaitForCacheSync("persistent volume", stopCh, ctrl.volumeListerSynced, ctrl.claimListerSynced, ctrl.podListerSynced, ctrl.classListerSynced) {
 		return
 	}
 

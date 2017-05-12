@@ -541,6 +541,7 @@ func StartControllers(controllers map[string]InitFunc, s *options.CMServer, root
 			Cloud:                     cloud,
 			ClusterName:               s.ClusterName,
 			VolumeInformer:            sharedInformers.Core().V1().PersistentVolumes(),
+			PodInformer:               sharedInformers.Core().V1().Pods(),
 			ClaimInformer:             sharedInformers.Core().V1().PersistentVolumeClaims(),
 			ClassInformer:             sharedInformers.Storage().V1().StorageClasses(),
 			EnableDynamicProvisioning: s.VolumeConfiguration.EnableDynamicProvisioning,

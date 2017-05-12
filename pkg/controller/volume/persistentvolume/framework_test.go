@@ -86,6 +86,8 @@ type controllerTest struct {
 	initialClaims []*v1.PersistentVolumeClaim
 	// Expected content of controller claim cache at the end of the test.
 	expectedClaims []*v1.PersistentVolumeClaim
+	// Initial content of controller pod cache.
+	initialPods []*v1.Pod
 	// Expected events - any event with prefix will pass, we don't check full
 	// event message.
 	expectedEvents []string
@@ -103,6 +105,7 @@ const mockPluginName = "kubernetes.io/mock-volume"
 var versionConflictError = errors.New("VersionError")
 var novolumes []*v1.PersistentVolume
 var noclaims []*v1.PersistentVolumeClaim
+var nopods []*v1.Pod
 var noevents = []string{}
 var noerrors = []reactorError{}
 
@@ -126,11 +129,13 @@ var noerrors = []reactorError{}
 type volumeReactor struct {
 	volumes              map[string]*v1.PersistentVolume
 	claims               map[string]*v1.PersistentVolumeClaim
+	pods                 map[string]*v1.Pod
 	changedObjects       []interface{}
 	changedSinceLastSync int
 	ctrl                 *PersistentVolumeController
 	fakeVolumeWatch      *watch.FakeWatcher
 	fakeClaimWatch       *watch.FakeWatcher
+	fakePodWatch         *watch.FakeWatcher
 	lock                 sync.Mutex
 	errors               []reactorError
 }
@@ -576,13 +581,15 @@ func (r *volumeReactor) addClaimEvent(claim *v1.PersistentVolumeClaim) {
 	}
 }
 
-func newVolumeReactor(client *fake.Clientset, ctrl *PersistentVolumeController, fakeVolumeWatch, fakeClaimWatch *watch.FakeWatcher, errors []reactorError) *volumeReactor {
+func newVolumeReactor(client *fake.Clientset, ctrl *PersistentVolumeController, fakeVolumeWatch *watch.FakeWatcher, fakeClaimWatch *watch.FakeWatcher, fakePodWatch *watch.FakeWatcher, errors []reactorError) *volumeReactor {
 	reactor := &volumeReactor{
 		volumes:         make(map[string]*v1.PersistentVolume),
 		claims:          make(map[string]*v1.PersistentVolumeClaim),
+		pods:            make(map[string]*v1.Pod),
 		ctrl:            ctrl,
 		fakeVolumeWatch: fakeVolumeWatch,
 		fakeClaimWatch:  fakeClaimWatch,
+		fakePodWatch:    fakePodWatch,
 		errors:          errors,
 	}
 	client.AddReactor("create", "persistentvolumes", reactor.React)
@@ -606,6 +613,7 @@ func newTestController(kubeClient clientset.Interface, informerFactory informers
 		VolumePlugins:             []vol.VolumePlugin{},
 		VolumeInformer:            informerFactory.Core().V1().PersistentVolumes(),
 		ClaimInformer:             informerFactory.Core().V1().PersistentVolumeClaims(),
+		PodInformer:               informerFactory.Core().V1().Pods(),
 		ClassInformer:             informerFactory.Storage().V1().StorageClasses(),
 		EventRecorder:             record.NewFakeRecorder(1000),
 		EnableDynamicProvisioning: enableDynamicProvisioning,
@@ -616,6 +624,7 @@ func newTestController(kubeClient clientset.Interface, informerFactory informers
 	}
 	ctrl.volumeListerSynced = alwaysReady
 	ctrl.claimListerSynced = alwaysReady
+	ctrl.podListerSynced = alwaysReady
 	ctrl.classListerSynced = alwaysReady
 	// Speed up the test
 	ctrl.createProvisionedPVInterval = 5 * time.Millisecond
@@ -773,6 +782,48 @@ func newClaimArray(name, claimUID, capacity, boundToVolume string, phase v1.Pers
 	}
 }
 
+// newPod returns a new pod with given attributes
+func newPod(name, volumeName string, phase v1.PodPhase, class *string, annotations ...string) *v1.Pod {
+	pod := v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+		},
+		Spec: v1.PodSpec{
+			NodeName: "NodeName",
+			Volumes: []v1.Volume{
+				{
+					Name: volumeName,
+				},
+			},
+		},
+		Status: v1.PodStatus{
+			Phase: v1.PodPhase("Running"),
+		},
+	}
+	// Make sure ref.GetReference(claim) works
+	pod.ObjectMeta.SelfLink = testapi.Default.SelfLink("pod", name)
+
+	if len(annotations) > 0 {
+		pod.Annotations = make(map[string]string)
+		for _, a := range annotations {
+			switch a {
+			default:
+				pod.Annotations[a] = "yes"
+			}
+		}
+	}
+
+	return &pod
+}
+
+// newPodArray returns array with a single pod that would be returned by
+// newPod() with the same parameters.
+func newPodArray(name, volumeName string, phase v1.PodPhase, class *string, annotations ...string) []*v1.Pod {
+	return []*v1.Pod{
+		newPod(name, volumeName, phase, class, annotations...),
+	}
+}
+
 // claimWithAnnotation saves given annotation into given claims.
 // Meant to be used to compose claims specified inline in a test.
 func claimWithAnnotation(name, value string, claims []*v1.PersistentVolumeClaim) []*v1.PersistentVolumeClaim {
@@ -919,7 +970,7 @@ func runSyncTests(t *testing.T, tests []controllerTest, storageClasses []*storag
 		if err != nil {
 			t.Fatalf("Test %q construct persistent volume failed: %v", test.name, err)
 		}
-		reactor := newVolumeReactor(client, ctrl, nil, nil, test.errors)
+		reactor := newVolumeReactor(client, ctrl, nil, nil, nil, test.errors)
 		for _, claim := range test.initialClaims {
 			ctrl.claims.Add(claim)
 			reactor.claims[claim.Name] = claim
@@ -984,7 +1035,7 @@ func runMultisyncTests(t *testing.T, tests []controllerTest, storageClasses []*s
 		}
 		ctrl.classLister = storagelisters.NewStorageClassLister(indexer)
 
-		reactor := newVolumeReactor(client, ctrl, nil, nil, test.errors)
+		reactor := newVolumeReactor(client, ctrl, nil, nil, nil, test.errors)
 		for _, claim := range test.initialClaims {
 			ctrl.claims.Add(claim)
 			reactor.claims[claim.Name] = claim

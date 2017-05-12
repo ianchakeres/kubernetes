@@ -154,6 +154,8 @@ type PersistentVolumeController struct {
 	volumeListerSynced cache.InformerSynced
 	claimLister        corelisters.PersistentVolumeClaimLister
 	claimListerSynced  cache.InformerSynced
+	podLister          corelisters.PodLister
+	podListerSynced    cache.InformerSynced
 	classLister        storagelisters.StorageClassLister
 	classListerSynced  cache.InformerSynced
 
