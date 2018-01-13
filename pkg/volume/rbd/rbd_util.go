@@ -235,9 +235,20 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 
 	devicePath, found := waitForPath(b.Pool, b.Image, 1)
 	if !found {
-		_, err = b.exec.Run("modprobe", "rbd")
+
+		var rbdCmd string
+		_, err = b.exec.Run("modprobe", "nbd")
 		if err != nil {
-			glog.Warningf("rbd: failed to load rbd kernel module:%v", err)
+			glog.V(5).Infof("rbd: nbd modprobe failed with error: %v", err)
+			_, err = b.exec.Run("modprobe", "rbd")
+			if err != nil {
+				glog.Warningf("rbd: failed to load rbd kernel module: %v", err)
+			}
+			rbdCmd = "rbd"
+			glog.V(4).Infof("rbd: using rbd for map function")
+		} else {
+			rbdCmd = "rdb-nbd"
+			glog.V(4).Infof("rbd: using rbd-nbd for map function")
 		}
 
 		// Currently, we don't acquire advisory lock on image, but for backward
@@ -268,10 +279,10 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 		mon := util.kernelRBDMonitorsOpt(b.Mon)
 		glog.V(1).Infof("rbd: map mon %s", mon)
 		if b.Secret != "" {
-			output, err = b.exec.Run("rbd",
+			output, err = b.exec.Run(rbdCmd,
 				"map", b.Image, "--pool", b.Pool, "--id", b.Id, "-m", mon, "--key="+b.Secret)
 		} else {
-			output, err = b.exec.Run("rbd",
+			output, err = b.exec.Run(rbdCmd,
 				"map", b.Image, "--pool", b.Pool, "--id", b.Id, "-m", mon, "-k", b.Keyring)
 		}
 		if err != nil {
@@ -293,9 +304,20 @@ func (util *RBDUtil) DetachDisk(plugin *rbdPlugin, deviceMountPath string, devic
 	if len(device) == 0 {
 		return fmt.Errorf("DetachDisk failed , device is empty")
 	}
-	// rbd unmap
+
 	exec := plugin.host.GetExec(plugin.GetPluginName())
-	output, err := exec.Run("rbd", "unmap", device)
+
+	var rbdCmd string
+	if _, err := exec.Run("rbd-nbd", "list-mapped"); err == nil {
+		rbdCmd = "rbd-nbd"
+		glog.V(4).Infof("rbd: using rbd-nbd for unmap function")
+	} else {
+		rbdCmd = "rbd"
+		glog.V(4).Infof("rbd: using rbd for unmap function")
+	}
+
+	// rbd unmap
+	output, err := exec.Run(rbdCmd, "unmap", device)
 	if err != nil {
 		return rbdErrors(err, fmt.Errorf("rbd: failed to unmap device %s, error %v, rbd output: %v", device, err, output))
 	}
@@ -338,9 +360,20 @@ func (util *RBDUtil) DetachBlockDisk(disk rbdDiskUnmapper, mapPath string) error
 	if len(device) == 0 {
 		return fmt.Errorf("DetachDisk failed , device is empty")
 	}
-	// rbd unmap
+
 	exec := disk.plugin.host.GetExec(disk.plugin.GetPluginName())
-	output, err := exec.Run("rbd", "unmap", device)
+
+	var rbdCmd string
+	if _, err := exec.Run("rbd-nbd", "list-mapped"); err == nil {
+		rbdCmd = "rbd-nbd"
+		glog.V(4).Infof("rbd: using rbd-nbd for unmap function")
+	} else {
+		rbdCmd = "rbd"
+		glog.V(4).Infof("rbd: using rbd for unmap function")
+	}
+
+	// rbd unmap
+	output, err := exec.Run(rbdCmd, "unmap", device)
 	if err != nil {
 		return rbdErrors(err, fmt.Errorf("rbd: failed to unmap device %s, error %v, rbd output: %s", device, err, string(output)))
 	}
