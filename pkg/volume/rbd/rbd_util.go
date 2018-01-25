@@ -55,8 +55,20 @@ const (
 	rbdImageWatcherSteps     = 10
 )
 
-// search /sys/bus for rbd device that matches given pool and image
 func getDevFromImageAndPool(pool, image string) (string, bool) {
+	device, found := getRbdDevFromImageAndPool(pool, image)
+	if found {
+		return device, true
+	}
+	device, found = getNbdDevFromImageAndPool(pool, image)
+	if found {
+		return device, true
+	}
+	return "", false
+}
+
+// search /sys/bus for rbd device that matches given pool and image
+func getRbdDevFromImageAndPool(pool string, image string) (string, bool) {
 	// /sys/bus/rbd/devices/X/name and /sys/bus/rbd/devices/X/pool
 	sys_path := "/sys/bus/rbd/devices"
 	if dirs, err := ioutil.ReadDir(sys_path); err == nil {
@@ -96,12 +108,75 @@ func getDevFromImageAndPool(pool, image string) (string, bool) {
 	return "", false
 }
 
-// stat a path, if not exists, retry maxRetries times
-func waitForPath(pool, image string, maxRetries int) (string, bool) {
-	for i := 0; i < maxRetries; i++ {
-		devicePath, found := getDevFromImageAndPool(pool, image)
-		if found {
+// locate any existing rbd-nbd process mapping given pool/image
+// recent versions of nbd-rbd tool can correctly provide this using list-mapped
+// but older versions of list-mapped are very buggy
+// the implementation below peeks at the command line of nbd bound processes
+// to figure out any mapped image
+func getNbdDevFromImageAndPool(pool, image string) (string, bool) {
+	// todo: we bail on the first nbd device access error
+	// instead we should get nbd_max from the nbd module if possible
+	base_path := "/sys/block/nbd"
+	for i := 0; ; i++ {
+		nbd_path := base_path + strconv.Itoa(i)
+		_, err := os.Lstat(nbd_path)
+		if err != nil {
+			glog.V(4).Infof("Error reading nbd info directory %s: %v", nbd_path, err)
+			break
+		}
+		pidBytes, err := ioutil.ReadFile(path.Join(nbd_path, "pid"))
+		if err != nil {
+			glog.V(5).Infof("Did not find valid pid file in dir %s: %v", nbd_path, err)
+			continue
+		}
+
+		cmdlineFile := path.Join("/proc", strings.TrimSpace(string(pidBytes)), "cmdline")
+		fmt.Printf("reading %s\n", cmdlineFile)
+		rawCmdline, err := ioutil.ReadFile(cmdlineFile)
+		if err != nil {
+			glog.V(4).Infof("Failed to read commandline file %s: %v", cmdlineFile, err)
+			continue
+		}
+
+		cmdLineArgs := strings.FieldsFunc(string(rawCmdline), func(r rune) bool {
+			return r == '\u0000'
+		})
+		if len(cmdLineArgs) < 3 || cmdLineArgs[0] != "nbd-rbd" || cmdLineArgs[1] != "map" {
+			glog.V(4).Infof("nbd device %s is not used by rbd", nbd_path)
+			continue
+		}
+		if cmdLineArgs[2] != image {
+			glog.V(4).Infof("nbd-rbd device %s did not match on image %s / %s",
+				nbd_path, cmdLineArgs[2], image)
+			continue
+		}
+		for n := 3; n < len(cmdLineArgs)-1; n++ {
+			if cmdLineArgs[n] != "--pool" || cmdLineArgs[n+1] != pool {
+				continue
+			}
+			devicePath := path.Join("/dev", "nbd"+strconv.Itoa(i))
+			if _, err := os.Lstat(devicePath); err != nil {
+				glog.V(4).Infof("Device %s for image %s/%s not found",
+					devicePath, pool, image)
+				break
+			}
 			return devicePath, true
+		}
+	}
+	return "", false
+}
+
+// stat a path, if not exists, retry maxRetries times
+func waitForPath(pool, image string, maxRetries int, useNbdDriver bool) (string, bool) {
+	for i := 0; i < maxRetries; i++ {
+		if useNbdDriver {
+			if devicePath, found := getNbdDevFromImageAndPool(pool, image); found {
+				return devicePath, true
+			}
+		} else {
+			if devicePath, found := getRbdDevFromImageAndPool(pool, image); found {
+				return devicePath, true
+			}
 		}
 		if i == maxRetries-1 {
 			break
@@ -109,6 +184,16 @@ func waitForPath(pool, image string, maxRetries int) (string, bool) {
 		time.Sleep(time.Second)
 	}
 	return "", false
+}
+
+func execRbdMap(b rbdMounter, rbdCmd string, mon string) ([]byte, error) {
+	if b.Secret != "" {
+		return b.exec.Run(rbdCmd,
+			"map", b.Image, "--pool", b.Pool, "--id", b.Id, "-m", mon, "--key="+b.Secret)
+	} else {
+		return b.exec.Run(rbdCmd,
+			"map", b.Image, "--pool", b.Pool, "--id", b.Id, "-m", mon, "-k", b.Keyring)
+	}
 }
 
 // make a directory like /var/lib/kubelet/plugins/kubernetes.io/rbd/mounts/pool-image-image
@@ -233,24 +318,27 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 		}
 	}
 
-	devicePath, found := waitForPath(b.Pool, b.Image, 1)
-	if !found {
+	// if rbd-nbd tools are installed, we will try to map as a nbd device first
+	nbdToolsFound := false
+	_, err = b.exec.Run("modprobe", "nbd")
+	if err != nil {
+		glog.V(5).Infof("rbd-nbd: nbd modprobe failed with error %v", err)
+	} else if _, err := b.exec.Run("rbd-nbd", "--version"); err != nil {
+		glog.V(5).Infof("rbd-nbd: getting rbd-nbd version failed with error %v", err)
+	} else {
+		glog.V(4).Infof("rbd-nbd tools are found. Will first try to map using rbd-nbd")
+		nbdToolsFound = true
+	}
 
-		var rbdCmd string
-		_, err = b.exec.Run("modprobe", "nbd")
-		if err != nil {
-			glog.V(5).Infof("rbd: nbd modprobe failed with error: %v", err)
-			_, err = b.exec.Run("modprobe", "rbd")
-			if err != nil {
-				glog.Warningf("rbd: failed to load rbd kernel module: %v", err)
-			}
-			rbdCmd = "rbd"
-			glog.V(4).Infof("rbd: using rbd for map function")
-		} else {
-			rbdCmd = "rdb-nbd"
-			glog.V(4).Infof("rbd: using rbd-nbd for map function")
-		}
+	devicePath, mapped := "", false
+	if nbdToolsFound {
+		devicePath, mapped = waitForPath(b.Pool, b.Image, 1, true)
+	}
+	if !mapped {
+		devicePath, mapped = waitForPath(b.Pool, b.Image, 1, false)
+	}
 
+	if !mapped {
 		// Currently, we don't acquire advisory lock on image, but for backward
 		// compatibility, we need to check if the image is being used by nodes running old kubelet.
 		// osd_client_watch_timeout defaults to 30 seconds, if the watcher stays active longer than 30 seconds,
@@ -278,19 +366,29 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 
 		mon := util.kernelRBDMonitorsOpt(b.Mon)
 		glog.V(1).Infof("rbd: map mon %s", mon)
-		if b.Secret != "" {
-			output, err = b.exec.Run(rbdCmd,
-				"map", b.Image, "--pool", b.Pool, "--id", b.Id, "-m", mon, "--key="+b.Secret)
-		} else {
-			output, err = b.exec.Run(rbdCmd,
-				"map", b.Image, "--pool", b.Pool, "--id", b.Id, "-m", mon, "-k", b.Keyring)
+
+		if nbdToolsFound {
+			output, err = execRbdMap(b, "rbd-nbd", mon)
+			if err != nil {
+				glog.V(1).Infof("rbd-nbd: map error %v, rbd-nbd output: %s", err, string(output))
+				glog.V(4).Info("will retry using rbd after rbd-nbd failure")
+			} else {
+				devicePath, mapped = waitForPath(b.Pool, b.Image, 10, true)
+			}
 		}
-		if err != nil {
-			glog.V(1).Infof("rbd: map error %v, rbd output: %s", err, string(output))
-			return "", fmt.Errorf("rbd: map failed %v, rbd output: %s", err, string(output))
+		if !mapped {
+			_, err = b.exec.Run("modprobe", "rbd")
+			if err != nil {
+				glog.Warningf("rbd: failed to load rbd kernel module: %v", err)
+			}
+			output, err = execRbdMap(b, "rbd", mon)
+			if err != nil {
+				glog.V(1).Infof("rbd: map error %v, rbd output: %s", err, string(output))
+				return "", fmt.Errorf("rbd: map failed %v, rbd output: %s", err, string(output))
+			}
+			devicePath, mapped = waitForPath(b.Pool, b.Image, 10, false)
 		}
-		devicePath, found = waitForPath(b.Pool, b.Image, 10)
-		if !found {
+		if !mapped {
 			return "", fmt.Errorf("Could not map image %s/%s, Timeout after 10s", b.Pool, b.Image)
 		}
 	}
@@ -364,7 +462,10 @@ func (util *RBDUtil) DetachBlockDisk(disk rbdDiskUnmapper, mapPath string) error
 	exec := disk.plugin.host.GetExec(disk.plugin.GetPluginName())
 
 	var rbdCmd string
-	if _, err := exec.Run("rbd-nbd", "list-mapped"); err == nil {
+
+	// unlike map, we cannot fallthrough here
+	// any nbd device must be unmapped by rbd-nbd
+	if strings.HasPrefix(device, "/dev/nbd") {
 		rbdCmd = "rbd-nbd"
 		glog.V(4).Infof("rbd: using rbd-nbd for unmap function")
 	} else {
