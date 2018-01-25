@@ -109,7 +109,7 @@ func getRbdDevFromImageAndPool(pool string, image string) (string, bool) {
 }
 
 // Locate any existing rbd-nbd process mapping given a <pool, image>.
-// Recent versions of nbd-rbd tool can correctly provide this info using list-mapped
+// Recent versions of rbd-nbd tool can correctly provide this info using list-mapped
 // but older versions of list-mapped don't.
 // The implementation below peeks at the command line of nbd bound processes
 // to figure out any mapped images.
@@ -138,12 +138,12 @@ func getNbdDevFromImageAndPool(pool, image string) (string, bool) {
 		cmdLineArgs := strings.FieldsFunc(string(rawCmdline), func(r rune) bool {
 			return r == '\u0000'
 		})
-		if len(cmdLineArgs) < 3 || cmdLineArgs[0] != "nbd-rbd" || cmdLineArgs[1] != "map" {
+		if len(cmdLineArgs) < 3 || cmdLineArgs[0] != "rbd-nbd" || cmdLineArgs[1] != "map" {
 			glog.V(4).Infof("nbd device %s is not used by rbd", nbdPath)
 			continue
 		}
 		if cmdLineArgs[2] != image {
-			glog.V(4).Infof("nbd-rbd device %s did not match on image %s / %s",
+			glog.V(4).Infof("rbd-nbd device %s did not match on image %s / %s",
 				nbdPath, cmdLineArgs[2], image)
 			continue
 		}
