@@ -333,10 +333,10 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 	var devicePath string
 	var mapped bool
 	if nbdToolsFound {
-		devicePath, mapped = waitForPath(b.Pool, b.Image /*maxRetries*/, 1 /*useNbdDriver*/, true)
+		devicePath, mapped = waitForPath(b.Pool, b.Image, 1 /*maxRetries*/, true /*useNbdDriver*/)
 	}
 	if !mapped {
-		devicePath, mapped = waitForPath(b.Pool, b.Image /*maxRetries*/, 1 /*useNbdDriver*/, false)
+		devicePath, mapped = waitForPath(b.Pool, b.Image, 1 /*maxRetries*/, false /*useNbdDriver*/)
 	}
 
 	if !mapped {
@@ -374,7 +374,7 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 				glog.Infof("rbd-nbd: map error %v, rbd-nbd output: %s", err, string(output))
 				glog.V(4).Info("will retry using rbd after rbd-nbd failure")
 			} else {
-				devicePath, mapped = waitForPath(b.Pool, b.Image /*maxRetries*/, 10 /*useNbdDriver*/, true)
+				devicePath, mapped = waitForPath(b.Pool, b.Image, 10 /*maxRetries*/, true /*useNbdDriver*/)
 			}
 		}
 		if !mapped {
@@ -387,7 +387,7 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 				glog.V(1).Infof("rbd: map error %v, rbd output: %s", err, string(output))
 				return "", fmt.Errorf("rbd: map failed %v, rbd output: %s", err, string(output))
 			}
-			devicePath, mapped = waitForPath(b.Pool, b.Image /*maxRetries*/, 10 /*useNbdDriver*/, false)
+			devicePath, mapped = waitForPath(b.Pool, b.Image, 10 /*maxRetries*/, false /*useNbdDriver*/)
 		}
 		if !mapped {
 			return "", fmt.Errorf("Could not map image %s/%s, Timeout after 10s", b.Pool, b.Image)
