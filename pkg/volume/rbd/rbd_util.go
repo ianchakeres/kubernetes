@@ -113,14 +113,16 @@ func getRbdDevFromImageAndPool(pool string, image string) (string, bool) {
 // but older versions of list-mapped don't.
 // The implementation below peeks at the command line of nbd bound processes
 // to figure out any mapped images.
-func getNbdDevFromImageAndPool(pool, image string) (string, bool) {
-	// TODO: Presently code bails on the first nbd device access error
-	// instead we should get nbd_max from the nbd module if possible.
+func getNbdDevFromImageAndPool(pool string, image string) (string, bool) {
+	// nbd module exports the pid of serving process in sysfs
 	basePath := "/sys/block/nbd"
+	imgPath := pool + "/" + image
 	for i := 0; ; i++ {
 		nbdPath := basePath + strconv.Itoa(i)
 		_, err := os.Lstat(nbdPath)
 		if err != nil {
+			// TODO: Presently code bails on the first nbd device access error
+			// instead we should get nbd_max from the nbd module if possible.
 			glog.V(4).Infof("error reading nbd info directory %s: %v", nbdPath, err)
 			break
 		}
@@ -138,29 +140,25 @@ func getNbdDevFromImageAndPool(pool, image string) (string, bool) {
 		cmdlineArgs := strings.FieldsFunc(string(rawCmdline), func(r rune) bool {
 			return r == '\u0000'
 		})
-		// Expected content of cmdlineFile
-		// rbd-nbd map <IMAGE> --pool <POOL>
+		// Check if this process is mapping a rbd device.
+		// Only accepted pattern of cmdline is from execRbdMap:
+		// rbd-nbd map pool/image ...
 		if len(cmdlineArgs) < 3 || cmdlineArgs[0] != "rbd-nbd" || cmdlineArgs[1] != "map" {
 			glog.V(4).Infof("nbd device %s is not used by rbd", nbdPath)
 			continue
 		}
-		if cmdlineArgs[2] != image {
-			glog.V(4).Infof("rbd-nbd device %s did not match on image %s / %s",
-				nbdPath, cmdlineArgs[2], image)
+		if cmdlineArgs[2] != imgPath {
+			glog.V(4).Infof("rbd-nbd device %s did not match on image path %s / %s",
+				nbdPath, cmdlineArgs[2], imgPath)
 			continue
 		}
-		for n := 3; n < len(cmdlineArgs)-1; n++ {
-			if cmdlineArgs[n] != "--pool" || cmdlineArgs[n+1] != pool {
-				continue
-			}
-			devicePath := path.Join("/dev", "nbd"+strconv.Itoa(i))
-			if _, err := os.Lstat(devicePath); err != nil {
-				glog.V(4).Infof("Device %s for image %s/%s not found",
-					devicePath, pool, image)
-				break
-			}
-			return devicePath, true
+		devicePath := path.Join("/dev", "nbd"+strconv.Itoa(i))
+		if _, err := os.Lstat(devicePath); err != nil {
+			glog.V(4).Infof("Stat device %s for imgpath %s failed %v",
+				devicePath, imgPath, err)
+			continue
 		}
+		return devicePath, true
 	}
 	return "", false
 }
@@ -184,13 +182,17 @@ func waitForPath(pool, image string, maxRetries int, useNbdDriver bool) (string,
 	return "", false
 }
 
+// Execute command to map a rbd device for mounter
 func execRbdMap(b rbdMounter, rbdCmd string, mon string) ([]byte, error) {
+	// Commandline: rbdCmd map imgPath ...
+	// do not change this format - some tools like rbd-nbd are strict about it
+	imgPath := b.Pool + "/" + b.Image
 	if b.Secret != "" {
 		return b.exec.Run(rbdCmd,
-			"map", b.Image, "--pool", b.Pool, "--id", b.Id, "-m", mon, "--key="+b.Secret)
+			"map", imgPath, "--id", b.Id, "-m", mon, "--key="+b.Secret)
 	} else {
 		return b.exec.Run(rbdCmd,
-			"map", b.Image, "--pool", b.Pool, "--id", b.Id, "-m", mon, "-k", b.Keyring)
+			"map", imgPath, "--id", b.Id, "-m", mon, "-k", b.Keyring)
 	}
 }
 
@@ -331,10 +333,10 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 	var devicePath string
 	var mapped bool
 	if nbdToolsFound {
-		devicePath, mapped = waitForPath(b.Pool, b.Image, /*maxRetries*/ 1, /*useNbdDriver*/ true)
+		devicePath, mapped = waitForPath(b.Pool, b.Image /*maxRetries*/, 1 /*useNbdDriver*/, true)
 	}
 	if !mapped {
-		devicePath, mapped = waitForPath(b.Pool, b.Image, /*maxRetries*/ 1, /*useNbdDriver*/ false)
+		devicePath, mapped = waitForPath(b.Pool, b.Image /*maxRetries*/, 1 /*useNbdDriver*/, false)
 	}
 
 	if !mapped {
@@ -372,7 +374,7 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 				glog.Infof("rbd-nbd: map error %v, rbd-nbd output: %s", err, string(output))
 				glog.V(4).Info("will retry using rbd after rbd-nbd failure")
 			} else {
-				devicePath, mapped = waitForPath(b.Pool, b.Image, /*maxRetries*/ 10, /*useNbdDriver*/ true)
+				devicePath, mapped = waitForPath(b.Pool, b.Image /*maxRetries*/, 10 /*useNbdDriver*/, true)
 			}
 		}
 		if !mapped {
@@ -385,7 +387,7 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 				glog.V(1).Infof("rbd: map error %v, rbd output: %s", err, string(output))
 				return "", fmt.Errorf("rbd: map failed %v, rbd output: %s", err, string(output))
 			}
-			devicePath, mapped = waitForPath(b.Pool, b.Image, /*maxRetries*/ 10, /*useNbdDriver*/ false)
+			devicePath, mapped = waitForPath(b.Pool, b.Image /*maxRetries*/, 10 /*useNbdDriver*/, false)
 		}
 		if !mapped {
 			return "", fmt.Errorf("Could not map image %s/%s, Timeout after 10s", b.Pool, b.Image)
