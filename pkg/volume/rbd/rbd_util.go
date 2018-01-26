@@ -407,12 +407,13 @@ func (util *RBDUtil) DetachDisk(plugin *rbdPlugin, deviceMountPath string, devic
 	exec := plugin.host.GetExec(plugin.GetPluginName())
 
 	var rbdCmd string
-	if _, err := exec.Run("rbd-nbd", "version"); err == nil {
+
+	// Unlike map, we cannot fallthrough for unmap
+	// the tool to unmap is based on device type
+	if strings.HasPrefix(device, "/dev/nbd") {
 		rbdCmd = "rbd-nbd"
-		glog.V(4).Infof("rbd: using rbd-nbd for unmap function")
 	} else {
 		rbdCmd = "rbd"
-		glog.V(4).Infof("rbd: using rbd for unmap function")
 	}
 
 	// rbd unmap
