@@ -183,7 +183,8 @@ func waitForPath(pool, image string, maxRetries int, useNbdDriver bool) (string,
 	return "", false
 }
 
-// Execute command to map a rbd device for mounter
+// Execute command to map a rbd device for mounter.
+// rbdCmd is driver dependent and either "rbd" or "rbd-nbd".
 func execRbdMap(b rbdMounter, rbdCmd string, mon string) ([]byte, error) {
 	// Commandline: rbdCmd map imgPath ...
 	// do not change this format - some tools like rbd-nbd are strict about it.
@@ -324,19 +325,22 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 	_, err = b.exec.Run("modprobe", "nbd")
 	if err != nil {
 		glog.V(5).Infof("rbd-nbd: nbd modprobe failed with error %v", err)
-	} else if _, err := b.exec.Run("rbd-nbd", "--version"); err != nil {
+	} else if _, err := b.exec.Run("rbd-nbd", "list-mapped"); err != nil {
 		glog.V(5).Infof("rbd-nbd: getting rbd-nbd version failed with error %v", err)
 	} else {
-		glog.V(4).Infof("rbd-nbd tools were found. Attempting to map using rbd-nbd")
+		glog.V(3).Infof("rbd-nbd tools were found. Attempting to map using rbd-nbd")
 		nbdToolsFound = true
 	}
 
 	var devicePath string
 	var mapped bool
+	// The code below attempts to determine which, if any driver, has mapped the device.
 	if nbdToolsFound {
+		// Evalute whether this device was mapped with rbd-nbd.
 		devicePath, mapped = waitForPath(b.Pool, b.Image, 1 /*maxRetries*/, true /*useNbdDriver*/)
 	}
 	if !mapped {
+		// Evalute whether this device was mapped with rbd.
 		devicePath, mapped = waitForPath(b.Pool, b.Image, 1 /*maxRetries*/, false /*useNbdDriver*/)
 	}
 
