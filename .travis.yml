@@ -1,0 +1,19 @@
+
+os:
+  - osx
+  - linux
+
+language: go
+
+go:
+  - 1.9.x
+
+go_import_path: k8s.io/kubernetes
+
+before_install:
+  - if [ "$TRAVIS_OS_NAME" = "osx" ]; then ulimit -n 8192; fi
+
+install: true
+
+script:
+  - make test
