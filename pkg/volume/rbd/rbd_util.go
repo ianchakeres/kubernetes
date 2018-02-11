@@ -35,6 +35,7 @@ import (
 	"github.com/golang/glog"
 	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/wait"
 	fileutil "k8s.io/kubernetes/pkg/util/file"
 	"k8s.io/kubernetes/pkg/util/mount"
@@ -373,11 +374,13 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 		mon := util.kernelRBDMonitorsOpt(b.Mon)
 		glog.V(1).Infof("rbd: map mon %s", mon)
 
+		errList := []error{}
 		if nbdToolsFound {
 			output, err = execRbdMap(b, "rbd-nbd", mon)
 			if err != nil {
 				glog.Infof("rbd-nbd: map error %v, rbd-nbd output: %s", err, string(output))
 				glog.V(4).Info("will retry using rbd after rbd-nbd failure")
+				errList = append(errList, err)
 			} else {
 				devicePath, mapped = waitForPath(b.Pool, b.Image, 10 /*maxRetries*/, true /*useNbdDriver*/)
 			}
@@ -390,7 +393,8 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 			output, err = execRbdMap(b, "rbd", mon)
 			if err != nil {
 				glog.V(1).Infof("rbd: map error %v, rbd output: %s", err, string(output))
-				return "", fmt.Errorf("rbd: map failed %v, rbd output: %s", err, string(output))
+				errList = append(errList, err)
+				return "", fmt.Errorf("rbd: map failed %v, rbd output: %s", errors.NewAggregate(errList), string(output))
 			}
 			devicePath, mapped = waitForPath(b.Pool, b.Image, 10 /*maxRetries*/, false /*useNbdDriver*/)
 		}
