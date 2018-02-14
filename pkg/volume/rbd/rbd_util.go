@@ -139,7 +139,7 @@ func getNbdDevFromImageAndPool(pool string, image string) (string, bool) {
 		glog.V(4).Infof("nbd: max nbds parameters is %d", maxNbds)
 	} else {
 		glog.Warningf("nbd: failed to load max_nbds from %s (%v).", maxNbdsPath, err)
-		glog.Warningf("nbd: will iterate in %s for possible devicess", basePath)
+		glog.Warningf("nbd: will iterate in %s for possible devices", basePath)
 		maxNbds = -1
 	}
 
