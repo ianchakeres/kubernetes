@@ -81,6 +81,7 @@ type PersistentVolumeConfig struct {
 	Labels           labels.Set
 	StorageClassName string
 	NodeAffinity     *v1.VolumeNodeAffinity
+	VolumeMode       v1.PersistentVolumeMode
 }
 
 // PersistentVolumeClaimConfig is consumed by MakePersistentVolumeClaim() to generate a PVC object.
@@ -92,6 +93,7 @@ type PersistentVolumeClaimConfig struct {
 	Annotations      map[string]string
 	Selector         *metav1.LabelSelector
 	StorageClassName *string
+	VolumeMode       v1.PersistentVolumeMode
 }
 
 // Clean up a pv and pvc in a single pv/pvc test case.
@@ -603,6 +605,7 @@ func MakePersistentVolume(pvConfig PersistentVolumeConfig) *v1.PersistentVolume 
 			ClaimRef:         claimRef,
 			StorageClassName: pvConfig.StorageClassName,
 			NodeAffinity:     pvConfig.NodeAffinity,
+			VolumeMode:       &pvConfig.VolumeMode,
 		},
 	}
 	return pv
@@ -635,6 +638,7 @@ func MakePersistentVolumeClaim(cfg PersistentVolumeClaimConfig, ns string) *v1.P
 				},
 			},
 			StorageClassName: cfg.StorageClassName,
+			VolumeMode:       &cfg.VolumeMode,
 		},
 	}
 }

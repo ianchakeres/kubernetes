@@ -66,18 +66,22 @@ const (
 	TmpfsLocalVolumeType localVolumeType = "tmpfs"
 	// tests based on local ssd at /mnt/disks/by-uuid/
 	GCELocalSSDVolumeType localVolumeType = "gce-localssd-scsi-fs"
+	// creates a local file, formats it, and mounts it as a block device
+	BlockLocalVolumeType localVolumeType = "block"
 )
 
 var setupLocalVolumeMap = map[localVolumeType]func(*localTestConfig, *v1.Node) *localTestVolume{
 	GCELocalSSDVolumeType:    setupLocalVolumeGCELocalSSD,
 	TmpfsLocalVolumeType:     setupLocalVolumeTmpfs,
 	DirectoryLocalVolumeType: setupLocalVolumeDirectory,
+	BlockLocalVolumeType:     setupLocalVolumeBlock,
 }
 
 var cleanupLocalVolumeMap = map[localVolumeType]func(*localTestConfig, *localTestVolume){
 	GCELocalSSDVolumeType:    cleanupLocalVolumeGCELocalSSD,
 	TmpfsLocalVolumeType:     cleanupLocalVolumeTmpfs,
 	DirectoryLocalVolumeType: cleanupLocalVolumeDirectory,
+	BlockLocalVolumeType:     cleanupLocalVolumeBlock,
 }
 
 type localTestVolume struct {
@@ -168,7 +172,7 @@ var _ = utils.SIGDescribe("PersistentVolumes-local ", func() {
 		}
 	})
 
-	localVolumeTypes := []localVolumeType{DirectoryLocalVolumeType, TmpfsLocalVolumeType, GCELocalSSDVolumeType}
+	localVolumeTypes := []localVolumeType{DirectoryLocalVolumeType, TmpfsLocalVolumeType, GCELocalSSDVolumeType, BlockLocalVolumeType}
 	for _, tempTestVolType := range localVolumeTypes {
 
 		// New variable required for gingko test closures
@@ -617,6 +621,14 @@ func setupLocalVolumeDirectory(config *localTestConfig, node *v1.Node) *localTes
 	return setupWriteTestFile(hostDir, config, DirectoryLocalVolumeType, node)
 }
 
+func setupLocalVolumeBlock(config *localTestConfig, node *v1.Node) *localTestVolume {
+	testDirName := "local-volume-test-" + string(uuid.NewUUID())
+	hostDir := filepath.Join(hostBase, testDirName)
+	createAndMountBlockLocalVolume(config, hostDir, node)
+	// populate volume with testFile containing testFileContent
+	return setupWriteTestFile(hostDir, config, BlockLocalVolumeType, node)
+}
+
 func verifyLocalVolume(config *localTestConfig, volume *localTestVolume) {
 	framework.ExpectNoError(framework.WaitOnPVandPVC(config.client, config.ns, volume.pv, volume.pvc))
 }
@@ -654,10 +666,26 @@ func cleanupLocalVolumeDirectory(config *localTestConfig, volume *localTestVolum
 	Expect(err).NotTo(HaveOccurred())
 }
 
-func makeLocalPVCConfig(config *localTestConfig) framework.PersistentVolumeClaimConfig {
+// Deletes the PVC/PV, and launches a pod with hostpath volume to remove the test directory and test file
+func cleanupLocalVolumeBlock(config *localTestConfig, volume *localTestVolume) {
+	unmountBlockLocalVolume(config, volume.hostDir, volume.node)
+	By("Removing the test directory")
+	removeCmd := fmt.Sprintf("rm -r %s", volume.hostDir)
+	err := framework.IssueSSHCommand(removeCmd, framework.TestContext.Provider, volume.node)
+	Expect(err).NotTo(HaveOccurred())
+}
+
+func makeLocalPVCConfig(config *localTestConfig, volume *localTestVolume) framework.PersistentVolumeClaimConfig {
+	var pvcVolumeMode v1.PersistentVolumeMode
+	if volume.localVolumeType == BlockLocalVolumeType {
+		pvcVolumeMode = v1.PersistentVolumeBlock
+	} else {
+		pvcVolumeMode = v1.PersistentVolumeFilesystem
+	}
 	return framework.PersistentVolumeClaimConfig{
 		AccessModes:      []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
 		StorageClassName: &config.scName,
+		VolumeMode:       pvcVolumeMode,
 	}
 }
 
@@ -670,6 +698,13 @@ func makeLocalPVConfig(config *localTestConfig, volume *localTestVolume) framewo
 	nodeValue, found := volume.node.Labels[nodeKey]
 	if !found {
 		framework.Failf("Node does not have required label %q", nodeKey)
+	}
+
+	var pvVolumeMode v1.PersistentVolumeMode
+	if volume.localVolumeType == BlockLocalVolumeType {
+		pvVolumeMode = v1.PersistentVolumeBlock
+	} else {
+		pvVolumeMode = v1.PersistentVolumeFilesystem
 	}
 
 	return framework.PersistentVolumeConfig{
@@ -695,6 +730,7 @@ func makeLocalPVConfig(config *localTestConfig, volume *localTestVolume) framewo
 				},
 			},
 		},
+		VolumeMode: pvVolumeMode,
 	}
 }
 
@@ -703,8 +739,9 @@ func createLocalPVCsPVs(config *localTestConfig, volumes []*localTestVolume, mod
 	var err error
 
 	for _, volume := range volumes {
-		pvcConfig := makeLocalPVCConfig(config)
+		pvcConfig := makeLocalPVCConfig(config, volume)
 		pvConfig := makeLocalPVConfig(config, volume)
+
 		volume.pv, volume.pvc, err = framework.CreatePVPVC(config.client, pvConfig, pvcConfig, config.ns, false)
 		framework.ExpectNoError(err)
 	}
@@ -803,6 +840,23 @@ func createAndMountTmpfsLocalVolume(config *localTestConfig, dir string, node *v
 func unmountTmpfsLocalVolume(config *localTestConfig, dir string, node *v1.Node) {
 	By(fmt.Sprintf("Unmount tmpfs mount point on node %q at path %q", node.Name, dir))
 	err := framework.IssueSSHCommand(fmt.Sprintf("sudo umount %q", dir), framework.TestContext.Provider, node)
+	Expect(err).NotTo(HaveOccurred())
+}
+
+func createAndMountBlockLocalVolume(config *localTestConfig, dir string, node *v1.Node) {
+	By(fmt.Sprintf("Creating block mount point on node %q at path %q", node.Name, dir))
+	mkdirCmd := fmt.Sprintf("mkdir -p %q/%q-dir", dir, dir)
+	ddCmd := fmt.Sprintf("dd if=/dev/zero of=%q-file bs=1024 count=1024", dir)
+	formatCmd := fmt.Sprintf("mkfs.ext4 %q-file", dir)
+	losetupCmd := fmt.Sprintf("losetup /dev/loop0 %q-file", dir)
+	mountCmd := fmt.Sprintf("mount -o loop=/dev/loop0 %q-file %q-dir", dir, dir)
+	err := framework.IssueSSHCommand(fmt.Sprintf("%q && %q && %q && %q && %q", mkdirCmd, ddCmd, formatCmd, losetupCmd, mountCmd), framework.TestContext.Provider, node)
+	Expect(err).NotTo(HaveOccurred())
+}
+
+func unmountBlockLocalVolume(config *localTestConfig, dir string, node *v1.Node) {
+	By(fmt.Sprintf("Unmount block mount point on node %q at path %q-dir", node.Name, dir))
+	err := framework.IssueSSHCommand(fmt.Sprintf("sudo umount %q-dir", dir), framework.TestContext.Provider, node)
 	Expect(err).NotTo(HaveOccurred())
 }
 
