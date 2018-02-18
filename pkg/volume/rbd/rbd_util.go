@@ -109,6 +109,34 @@ func getRbdDevFromImageAndPool(pool string, image string) (string, bool) {
 	return "", false
 }
 
+func getMaxNbds() (int, error) {
+
+	// the max number of nbd devices may be found in maxNbdsPath
+	// we will check sysfs for possible nbd devices even if this is not available
+	maxNbdsPath := "/sys/module/nbd/parameters/nbds_max"
+	_, err := os.Lstat(maxNbdsPath)
+	if err != nil {
+		return 0, fmt.Errorf("rbd-nbd: failed to retreive max_nbds from %s err: %q", maxNbdsPath, err)
+	}
+
+	glog.V(4).Infof("found nbds max parameters file at %s", maxNbdsPath)
+
+	maxNbdBytes, err := ioutil.ReadFile(maxNbdsPath)
+	if err != nil {
+		return 0, fmt.Errorf("rbd-nbd: failed to read max_nbds from %s err: %q", maxNbdsPath, err)
+	}
+
+	maxNbds, err := strconv.Atoi(strings.TrimSpace(string(maxNbdBytes)))
+	if err != nil {
+		return 0, fmt.Errorf("rbd-nbd: failed to read max_nbds err: %q", err)
+	}
+
+	glog.V(4).Infof("rbd-nbd: max_nbds: %d", maxNbds)
+	return maxNbds, nil
+}
+
+
+
 // Locate any existing rbd-nbd process mapping given a <pool, image>.
 // Recent versions of rbd-nbd tool can correctly provide this info using list-mapped
 // but older versions of list-mapped don't.
@@ -119,14 +147,53 @@ func getNbdDevFromImageAndPool(pool string, image string) (string, bool) {
 	basePath := "/sys/block/nbd"
 	// Do not change imgPath format - some tools like rbd-nbd are strict about it.
 	imgPath := fmt.Sprintf("%s/%s", pool, image)
-	for i := 0; ; i++ {
+
+/*IDC
+	// the max number of nbd devices may be found in maxNbdsPath
+	// we will check sysfs for possible nbd devices even if this is not available
+	maxNbdsPath := "/sys/module/nbd/parameters/nbds_max"
+	var maxNbds int
+	_, err := os.Lstat(maxNbdsPath)
+	if err == nil {
+		glog.V(4).Infof("found nbds max parameters file at %s",
+			maxNbdsPath)
+		maxNbdBytes, err := ioutil.ReadFile(maxNbdsPath)
+		if err == nil {
+			maxNbds, err = strconv.Atoi(strings.TrimSpace(string(maxNbdBytes)))
+		}
+	}
+	if err == nil {
+		glog.V(4).Infof("nbd: max nbds parameters is %d", maxNbds)
+	} else {
+		glog.Warningf("nbd: failed to load max_nbds from %s (%v).", maxNbdsPath, err)
+		glog.Warningf("nbd: will iterate in %s for possible devices", basePath)
+		maxNbds = -1
+	}
+
+	for i := 0; maxNbds <= 0 || i < maxNbds; i++ {
+*/
+
+	maxNbds, maxNbdsErr := getMaxNbds()
+	for i := 0; maxNbdsErr != nil || i < maxNbds; i++ {
 		nbdPath := basePath + strconv.Itoa(i)
 		_, err := os.Lstat(nbdPath)
 		if err != nil {
-			// TODO: Presently code bails on the first nbd device access error
-			// instead we should get nbd_max from the nbd module if possible.
+//IDC			// TODO: Presently code bails on the first nbd device access error
+//IDC			// instead we should get nbd_max from the nbd module if possible.
 			glog.V(4).Infof("error reading nbd info directory %s: %v", nbdPath, err)
-			break
+/*IDC
+			if maxNbds > 0 {
+				continue
+			} else {
+				break
+			}
+*/
+			if maxNbdsErr != nil {
+				break
+			} else {
+				// Continue until we examine all nbd paths up to maxNbds
+				continue
+			}
 		}
 		pidBytes, err := ioutil.ReadFile(path.Join(nbdPath, "pid"))
 		if err != nil {
@@ -326,7 +393,7 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 	_, err = b.exec.Run("modprobe", "nbd")
 	if err != nil {
 		glog.V(5).Infof("rbd-nbd: nbd modprobe failed with error %v", err)
-	} else if _, err := b.exec.Run("rbd-nbd", "list-mapped"); err != nil {
+	} else if _, err := b.exec.Run("rbd-nbd", "--version"); err != nil {
 		glog.V(5).Infof("rbd-nbd: getting rbd-nbd version failed with error %v", err)
 	} else {
 		glog.V(3).Infof("rbd-nbd tools were found. Attempting to map using rbd-nbd")
