@@ -19,6 +19,7 @@ limitations under the License.
 package mount
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -141,10 +142,15 @@ func GetMountRefsByDev(mounter Interface, mountPath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	fmt.Printf("IDC*b1 mountPath: %v\n",mountPath)
+
 	slTarget, err := filepath.EvalSymlinks(mountPath)
 	if err != nil {
 		slTarget = mountPath
 	}
+
+	fmt.Printf("IDC*b1 slTarget: %v\n",slTarget)
 
 	// Finding the device mounted to mountPath
 	diskDev := ""
@@ -155,11 +161,16 @@ func GetMountRefsByDev(mounter Interface, mountPath string) ([]string, error) {
 		}
 	}
 
+	fmt.Printf("IDC*b1 diskDev: %v\n",diskDev)
+	
 	// Find all references to the device.
 	var refs []string
 	for i := range mps {
+		fmt.Printf("IDC*b2 mps[i].Device: %v\n",mps[i].Device)
 		if mps[i].Device == diskDev || mps[i].Device == slTarget {
+			fmt.Printf("IDC*b3\n")
 			if mps[i].Path != slTarget {
+				fmt.Printf("IDC*b4\n")
 				refs = append(refs, mps[i].Path)
 			}
 		}

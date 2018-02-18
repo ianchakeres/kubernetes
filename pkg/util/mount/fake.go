@@ -17,8 +17,12 @@ limitations under the License.
 package mount
 
 import (
+	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/golang/glog"
@@ -58,9 +62,15 @@ func (f *FakeMounter) Mount(source string, target string, fstype string, options
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 
+        absSource, err := filepath.EvalSymlinks(source)
+        if err != nil {
+		absSource = source
+        }
+
 	// find 'bind' option
 	for _, option := range options {
 		if option == "bind" {
+			bindFound := false
 			// This is a bind-mount. In order to mimic linux behaviour, we must
 			// use the original device of the bind-mount as the real source.
 			// E.g. when mounted /dev/sda like this:
@@ -72,13 +82,17 @@ func (f *FakeMounter) Mount(source string, target string, fstype string, options
 			// (and not /mnt/test /mnt/bound)
 			// I.e. we must use /dev/sda as source instead of /mnt/test in the
 			// bind mount.
+
 			for _, mnt := range f.MountPoints {
-				if source == mnt.Path {
-					source = mnt.Device
+				if absSource == mnt.Path {
+					absSource = mnt.Device
+					bindFound = true
 					break
 				}
 			}
-			break
+			if bindFound == false {
+				return fmt.Errorf("failed to find bind mount for source: %v", source)
+			}
 		}
 	}
 
@@ -87,10 +101,11 @@ func (f *FakeMounter) Mount(source string, target string, fstype string, options
 	if err != nil {
 		absTarget = target
 	}
-
-	f.MountPoints = append(f.MountPoints, MountPoint{Device: source, Path: absTarget, Type: fstype})
-	glog.V(5).Infof("Fake mounter: mounted %s to %s", source, absTarget)
-	f.Log = append(f.Log, FakeAction{Action: FakeActionMount, Target: absTarget, Source: source, FSType: fstype})
+	fmt.Printf("IDC=== target: %v, absTarget: %v\n", target, absTarget)
+	
+	f.MountPoints = append(f.MountPoints, MountPoint{Device: absSource, Path: absTarget, Type: fstype})
+	glog.V(5).Infof("Fake mounter: mounted %s to %s", absSource, absTarget)
+	f.Log = append(f.Log, FakeAction{Action: FakeActionMount, Target: absTarget, Source: absSource, FSType: fstype})
 	return nil
 }
 
@@ -175,7 +190,47 @@ func (f *FakeMounter) PathIsDevice(pathname string) (bool, error) {
 }
 
 func (f *FakeMounter) GetDeviceNameFromMount(mountPath, pluginDir string) (string, error) {
-	return getDeviceNameFromMount(f, mountPath, pluginDir)
+	// IDC FIX for darwin, since falling through to unsupported which is empty
+	fmt.Printf("IDC GetDeviceNameFromMount mountPath: %v, pluginDir %v\n",mountPath,pluginDir)
+	if runtime.GOOS == "darwin" {
+		path.Base(mountPath)
+		//dev,_,err := GetDeviceNameFromMount(f, mountPath)
+		//return dev, err
+		return GetDeviceNameFromMountDarwin(f, mountPath, pluginDir)
+	} else {
+		return getDeviceNameFromMount(f, mountPath, pluginDir)
+	}
+}
+
+// getDeviceNameFromMount find the device name from /proc/mounts in which
+// the mount path reference should match the given plugin directory. In case no mount path reference
+// matches, returns the volume name taken from its given mountPath
+func GetDeviceNameFromMountDarwin(mounter Interface, mountPath, pluginDir string) (string, error) {
+	refs, err := GetMountRefsByDev(mounter, mountPath)
+	if err != nil {
+		glog.V(4).Infof("GetMountRefs failed for mount path %q: %v", mountPath, err)
+		return "", err
+	}
+	if len(refs) == 0 {
+		glog.V(4).Infof("Directory %s is not mounted", mountPath)
+		return "", fmt.Errorf("directory %s is not mounted", mountPath)
+	}
+	basemountPath := path.Join(pluginDir, MountsInGlobalPDPath)
+	fmt.Printf("IDC1=========basemountPath:%v\n",basemountPath)
+	for _, ref := range refs {
+		if strings.HasPrefix(ref, basemountPath) {
+			fmt.Printf("IDC1=========ref:%v\n",ref)
+			volumeID, err := filepath.Rel(basemountPath, ref)
+			if err != nil {
+				glog.Errorf("Failed to get volume id from mount %s - %v", mountPath, err)
+				return "", err
+			}
+			fmt.Printf("IDC1=========volumeID:%v\n",volumeID)
+			return volumeID, nil
+		}
+	}
+	fmt.Println("IDC2=========mountPath:%v",mountPath)
+	return path.Base(mountPath), nil
 }
 
 func (f *FakeMounter) MakeRShared(path string) error {

@@ -350,17 +350,20 @@ func getDeviceNameFromMount(mounter Interface, mountPath, pluginDir string) (str
 		return "", fmt.Errorf("directory %s is not mounted", mountPath)
 	}
 	basemountPath := path.Join(pluginDir, MountsInGlobalPDPath)
+	fmt.Printf("IDC1=========basemountPath:%v\n",basemountPath)
 	for _, ref := range refs {
 		if strings.HasPrefix(ref, basemountPath) {
+			fmt.Printf("IDC1=========ref:%v\n",ref)
 			volumeID, err := filepath.Rel(basemountPath, ref)
 			if err != nil {
 				glog.Errorf("Failed to get volume id from mount %s - %v", mountPath, err)
 				return "", err
 			}
+			fmt.Printf("IDC1=========volumeID:%v\n",volumeID)
 			return volumeID, nil
 		}
 	}
-
+	fmt.Println("IDC2=========mountPath:%v",mountPath)
 	return path.Base(mountPath), nil
 }
 

@@ -355,8 +355,11 @@ func (plugin *rbdPlugin) ConstructVolumeSpec(volumeName, mountPath string) (*vol
 	if err != nil {
 		return nil, err
 	}
+	fmt.Printf("IDC1 sourceName: %v mountPath: %v\n", sourceName,mountPath)
 	s := dstrings.Split(sourceName, "-image-")
+	fmt.Printf("IDC1a s: %v\n", s)
 	if len(s) != 2 {
+		fmt.Printf("IDC2a\n")
 		// The mountPath parameter is the volume mount path for a specific pod, its format
 		// is /var/lib/kubelet/pods/{podUID}/volumes/{volumePluginName}/{volumeName}.
 		// mounter.GetDeviceNameFromMount will find the device path(such as /dev/rbd0) by
@@ -373,11 +376,13 @@ func (plugin *rbdPlugin) ConstructVolumeSpec(volumeName, mountPath string) (*vol
 		if err != nil {
 			return nil, err
 		}
+		fmt.Printf("IDC2a sourceName: %v\n", sourceName)
 		s = dstrings.Split(sourceName, "-image-")
 		if len(s) != 2 {
 			return nil, fmt.Errorf("sourceName %s wrong, should be pool+\"-image-\"+imageName", sourceName)
 		}
 	}
+	fmt.Printf("IDC3\n")
 	rbdVolume := &v1.Volume{
 		Name: volumeName,
 		VolumeSource: v1.VolumeSource{
@@ -512,6 +517,7 @@ func (plugin *rbdPlugin) newUnmapperInternal(volName string, podUID types.UID, m
 }
 
 func (plugin *rbdPlugin) getDeviceNameFromOldMountPath(mounter mount.Interface, mountPath string) (string, error) {
+	fmt.Printf("IDC*a1 mountPath: %v\n",mountPath)
 	refs, err := mount.GetMountRefsByDev(mounter, mountPath)
 	if err != nil {
 		return "", err
@@ -519,9 +525,19 @@ func (plugin *rbdPlugin) getDeviceNameFromOldMountPath(mounter mount.Interface, 
 	// baseMountPath is the prefix of deprecated device global mounted path,
 	// such as: /var/lib/kubelet/plugins/kubernetes.io/rbd/rbd
 	baseMountPath := filepath.Join(plugin.host.GetPluginDir(rbdPluginName), "rbd")
+	fmt.Printf("IDC*a1 baseMountPath: %v\n",baseMountPath)
+	// IDC needs to be converted...
+
+	absBaseMountPath, err := filepath.EvalSymlinks(baseMountPath)
+	if err != nil {
+		absBaseMountPath = baseMountPath
+	}
+	
 	for _, ref := range refs {
-		if dstrings.HasPrefix(ref, baseMountPath) {
-			return filepath.Rel(baseMountPath, ref)
+		fmt.Printf("IDC*a2 ref: %v\n",ref)
+		if dstrings.HasPrefix(ref, absBaseMountPath) {
+			fmt.Printf("IDC*a3\n")
+			return filepath.Rel(absBaseMountPath, ref)
 		}
 	}
 	return "", fmt.Errorf("can't find source name from mounted path: %s", mountPath)

@@ -523,6 +523,11 @@ func TestConstructVolumeSpec(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	tmpDir, err = filepath.EvalSymlinks(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	fakeVolumeHost := volumetest.NewFakeVolumeHost(tmpDir, nil, nil)
 	plugMgr := volume.VolumePluginMgr{}
 	plugMgr.InitPlugins(ProbeVolumePlugins(), nil /* prober */, fakeVolumeHost)
@@ -546,17 +551,33 @@ func TestConstructVolumeSpec(t *testing.T) {
 		{"vol", canonicalDir},
 		{"vol", deprecatedDir},
 	} {
+		fmt.Printf("***START*** %v\n", c.targetPath)
+		
 		if err := os.MkdirAll(c.targetPath, 0700); err != nil {
 			t.Fatalf("Create mount path %s failed: %v", c.targetPath, err)
 		}
 		if err = fakeMounter.Mount("/dev/rbd0", c.targetPath, "fake", nil); err != nil {
-			t.Fatalf("Mount %s to %s failed: %v", c.targetPath, podMountPath, err)
+			t.Fatalf("Mount %s to %s failed: %v", c.targetPath, "/dev/rbd0", err)
 		}
 		if err = fakeMounter.Mount(c.targetPath, podMountPath, "fake", []string{"bind"}); err != nil {
-			t.Fatalf("Mount %s to %s failed: %v", c.targetPath, podMountPath, err)
+			t.Fatalf("Mount %s to %s failed: %v", podMountPath, c.targetPath, err)
 		}
+
+
+
+                mps, err := fakeMounter.List()
+                if err != nil {
+                        fmt.Println("IDC fakeMounter.List error: %v",err)
+                }
+                for _, mp := range mps {
+                        fmt.Println("IDC fakeMounter.mountpoint: %v",mp)
+                }
+
+
+		
 		spec, err := plug.ConstructVolumeSpec(c.volumeName, podMountPath)
 		if err != nil {
+			fmt.Printf("ConstructVolumeSpec failed: %v\n", err)
 			t.Errorf("ConstructVolumeSpec failed: %v", err)
 		} else {
 			if spec.Volume.RBD.RBDPool != pool {
@@ -572,5 +593,6 @@ func TestConstructVolumeSpec(t *testing.T) {
 		if err = fakeMounter.Unmount(c.targetPath); err != nil {
 			t.Fatalf("Unmount device path %s failed: %v", c.targetPath, err)
 		}
+		fmt.Printf("***END*** %v\n", c.targetPath)
 	}
 }
