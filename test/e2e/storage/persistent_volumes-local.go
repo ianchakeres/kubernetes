@@ -781,6 +781,14 @@ func createLocalPVCsPVs(config *localTestConfig, volumes []*localTestVolume, mod
 }
 
 func makeLocalPod(config *localTestConfig, volume *localTestVolume, cmd string) *v1.Pod {
+	if volume.localVolumeType == BlockLocalVolumeType {
+		pod := framework.MakeSecPod(config.ns, []*v1.PersistentVolumeClaim{volume.pvc}, false, cmd, false, false, selinuxLabel)
+		if pod == nil {
+			return pod
+		}
+		// Block e2e tests require utilities (e.g. dd) for writing to block devices.
+		pod.Spec.Containers[0].Image = imageutils.GetE2EImage(imageutils.NginxSlim)
+	}
 	return framework.MakeSecPod(config.ns, []*v1.PersistentVolumeClaim{volume.pvc}, false, cmd, false, false, selinuxLabel)
 }
 
@@ -861,8 +869,8 @@ func unmountTmpfsLocalVolume(config *localTestConfig, dir string, node *v1.Node)
 func createAndMountBlockLocalVolume(config *localTestConfig, dir string, node *v1.Node) {
 	By(fmt.Sprintf("Creating block mount point on node %q at path %q", node.Name, dir))
 	mkdirCmd := fmt.Sprintf("mkdir -p %s", dir)
-	// Create 100MB file.
-	ddCmd := fmt.Sprintf("dd if=/dev/zero of=%s/file bs=512 count=204800", dir)
+	// Create 10MB file.
+	ddCmd := fmt.Sprintf("dd if=/dev/zero of=%s/file bs=512 count=20480", dir)
 	losetupLoopDevCmd := fmt.Sprintf("E2E_LOOP_DEV=$(sudo losetup -f) && echo ${E2E_LOOP_DEV}")
 	losetupCmd := fmt.Sprintf("sudo losetup ${E2E_LOOP_DEV} %s/file", dir)
 	err := framework.IssueSSHCommand(fmt.Sprintf("%s && %s && %s && %s", mkdirCmd, ddCmd, losetupLoopDevCmd, losetupCmd), framework.TestContext.Provider, node)
@@ -891,13 +899,13 @@ func createWriteCmd(testDir string, testFile string, writeTestFileContent string
 		testFileDir := filepath.Join("/tmp", testDir)
 		testFilePath := filepath.Join(testFileDir, testFile)
 		writeTestFileCmd := fmt.Sprintf("mkdir -p %s; echo %s > %s", testFileDir, writeTestFileContent, testFilePath)
-		//IDC writeBlockCmd := fmt.Sprintf("sudo dd if=%s of=%s bs=512 count=10", testFilePath, testDir)
 		// sudo is needed when using ssh exec to node
 		// sudo is not needed and does not exist in busybox container, when using pod exec
 		sudoCmd := fmt.Sprintf("SUDO_CMD=$(which sudo); echo ${SUDO_CMD}")
 		//IDC cp isn't working properly
 		// need to find alternative on busybox
-		writeBlockCmd := fmt.Sprintf("${SUDO_CMD} cp %s %s", testFilePath, testDir)
+		//writeBlockCmd := fmt.Sprintf("${SUDO_CMD} cp %s %s", testFilePath, testDir)
+		writeBlockCmd := fmt.Sprintf("${SUDO_CMD} dd if=%s of=%s bs=512 count=100", testFilePath, testDir)
 		deleteTestFileCmd := fmt.Sprintf("rm %s", testFilePath)
 		return fmt.Sprintf("%s && %s && %s && %s", writeTestFileCmd, sudoCmd, writeBlockCmd, deleteTestFileCmd)
 	} else {
@@ -907,9 +915,11 @@ func createWriteCmd(testDir string, testFile string, writeTestFileContent string
 }
 func createReadCmd(testFileDir string, testFile string, volumeType localVolumeType) string {
 	if volumeType == BlockLocalVolumeType {
+		// Read the beginning of the block device.
 		// no sudo or xxd in busybox
-		// return fmt.Sprintf("sudo xxd %s | head -1 | awk '{ print $10 }'", testFileDir)
-		return fmt.Sprintf("hexdump -e '/1 \"%%_p\"' %s | head -1", testFileDir)
+		//sudoCmd := fmt.Sprintf("SUDO_CMD=$(which sudo); echo ${SUDO_CMD}")
+		//return fmt.Sprintf("%s && ${SUDO_CMD} xxd -l 100 %s | head -1 | awk '{ print $10 }'", sudoCmd, testFileDir)
+		return fmt.Sprintf("hexdump -n 100 -e '/1 \"%%_p\"' %s | head -1", testFileDir)
 	} else {
 		testFilePath := filepath.Join(testFileDir, testFile)
 		return fmt.Sprintf("cat %s", testFilePath)
