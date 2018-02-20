@@ -919,7 +919,7 @@ func createReadCmd(testFileDir string, testFile string, volumeType localVolumeTy
 		// no sudo or xxd in busybox
 		//sudoCmd := fmt.Sprintf("SUDO_CMD=$(which sudo); echo ${SUDO_CMD}")
 		//return fmt.Sprintf("%s && ${SUDO_CMD} xxd -l 100 %s | head -1 | awk '{ print $10 }'", sudoCmd, testFileDir)
-		return fmt.Sprintf("hexdump -n 100 -e '/1 \"%%_p\"' %s | head -1", testFileDir)
+		return fmt.Sprintf("hexdump -n 100 -e '100 \"%%_p\"' %s | head -1", testFileDir)
 	} else {
 		testFilePath := filepath.Join(testFileDir, testFile)
 		return fmt.Sprintf("cat %s", testFilePath)
