@@ -147,17 +147,17 @@ func getNbdDevFromImageAndPool(pool string, image string) (string, bool) {
 	imgPath := fmt.Sprintf("%s/%s", pool, image)
 
 	maxNbds, maxNbdsErr := getMaxNbds()
-	for i := 0; maxNbdsErr != nil || i < maxNbds; i++ {
+	if maxNbdsErr != nil {
+		glog.V(4).Infof("error reading nbds_max %v", maxNbdsErr)
+		return "", false
+	}
+
+	for i := 0; i < maxNbds; i++ {
 		nbdPath := basePath + strconv.Itoa(i)
 		_, err := os.Lstat(nbdPath)
 		if err != nil {
 			glog.V(4).Infof("error reading nbd info directory %s: %v", nbdPath, err)
-			if maxNbdsErr != nil {
-				break
-			} else {
-				// Continue until we examine all nbd paths up to maxNbds
-				continue
-			}
+			continue
 		}
 		pidBytes, err := ioutil.ReadFile(path.Join(nbdPath, "pid"))
 		if err != nil {
