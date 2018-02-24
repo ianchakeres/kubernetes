@@ -116,7 +116,7 @@ func getMaxNbds() (int, error) {
 	maxNbdsPath := "/sys/module/nbd/parameters/nbds_max"
 	_, err := os.Lstat(maxNbdsPath)
 	if err != nil {
-		return 0, fmt.Errorf("rbd-nbd: failed to retreive max_nbds from %s err: %q", maxNbdsPath, err)
+		return 0, fmt.Errorf("rbd-nbd: failed to retrieve max_nbds from %s err: %q", maxNbdsPath, err)
 	}
 
 	glog.V(4).Infof("found nbds max parameters file at %s", maxNbdsPath)
