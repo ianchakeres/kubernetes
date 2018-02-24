@@ -583,7 +583,7 @@ func MakePersistentVolume(pvConfig PersistentVolumeConfig) *v1.PersistentVolume 
 			Namespace: pvConfig.Prebind.Namespace,
 		}
 	}
-	pv := &v1.PersistentVolume{
+	return &v1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: pvConfig.NamePrefix,
 			Labels:       pvConfig.Labels,
@@ -605,12 +605,9 @@ func MakePersistentVolume(pvConfig PersistentVolumeConfig) *v1.PersistentVolume 
 			ClaimRef:         claimRef,
 			StorageClassName: pvConfig.StorageClassName,
 			NodeAffinity:     pvConfig.NodeAffinity,
+			VolumeMode:       pvConfig.VolumeMode,
 		},
 	}
-	if pvConfig.VolumeMode != nil {
-		pv.Spec.VolumeMode = pvConfig.VolumeMode
-	}
-	return pv
 }
 
 // Returns a PVC definition based on the namespace.
@@ -625,7 +622,7 @@ func MakePersistentVolumeClaim(cfg PersistentVolumeClaimConfig, ns string) *v1.P
 		cfg.AccessModes = append(cfg.AccessModes, v1.ReadWriteOnce, v1.ReadOnlyMany, v1.ReadOnlyMany)
 	}
 
-	pvc := &v1.PersistentVolumeClaim{
+	return &v1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "pvc-",
 			Namespace:    ns,
@@ -640,12 +637,9 @@ func MakePersistentVolumeClaim(cfg PersistentVolumeClaimConfig, ns string) *v1.P
 				},
 			},
 			StorageClassName: cfg.StorageClassName,
+			VolumeMode:       cfg.VolumeMode,
 		},
 	}
-	if cfg.VolumeMode != nil {
-		pvc.Spec.VolumeMode = cfg.VolumeMode
-	}
-	return pvc
 }
 
 func createPDWithRetry(zone string) (string, error) {
