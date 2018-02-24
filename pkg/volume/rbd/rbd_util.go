@@ -356,7 +356,6 @@ func (util *RBDUtil) rbdUnlock(b rbdMounter) error {
 
 // AttachDisk attaches the disk on the node.
 func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
-	var err error
 	var output []byte
 
 	globalPDPath := util.MakeGlobalPDName(*b.rbd)
@@ -380,11 +379,6 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 	}
 
 	if !mapped {
-		_, err = b.exec.Run("modprobe", "rbd")
-		if err != nil {
-			glog.Warningf("rbd: failed to load rbd kernel module:%v", err)
-		}
-
 		// Currently, we don't acquire advisory lock on image, but for backward
 		// compatibility, we need to check if the image is being used by nodes running old kubelet.
 		// osd_client_watch_timeout defaults to 30 seconds, if the watcher stays active longer than 30 seconds,
@@ -413,13 +407,18 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 		mon := util.kernelRBDMonitorsOpt(b.Mon)
 		glog.V(1).Infof("rbd: map mon %s", mon)
 
+		_, err = b.exec.Run("modprobe", "rbd")
+		if err != nil {
+			glog.Warningf("rbd: failed to load rbd kernel module:%v", err)
+		}
+
 		output, err = execRbdMap(b, "rbd", mon)
 		if err != nil {
-			glog.V(1).Infof("rbd: map error %v, rbd output: %s", err, string(output))
 			if !foundRbdNbd {
+				glog.V(1).Infof("rbd: map error %v, rbd output: %s", err, string(output))
 				return "", fmt.Errorf("rbd: map failed %v, rbd output: %s", err, string(output))
 			}
-			glog.V(3).Infof("rbd-nbd tools present. Retrying failed rbd map using rbd-nbd.")
+			glog.V(3).Infof("rbd: map failed with %v, %s. Retrying with rbd-nbd", err, string(output))
 			errList := []error{err}
 			outputList := output
 			output, err = execRbdMap(b, "rbd-nbd", mon)
