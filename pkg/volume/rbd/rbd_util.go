@@ -196,13 +196,14 @@ func getNbdDevFromImageAndPool(pool string, image string) (string, bool) {
 	return "", false
 }
 
+
 // Stat a path, if it doesn't exist, retry maxRetries times.
-func waitForPath(pool, image string, maxRetries int, useNbdDriver bool) (string, bool) {
+func waitForPath(pool, image string, maxRetries int, pathType string) (string, bool) {
 	for i := 0; i < maxRetries; i++ {
 		if i != 0 {
 			time.Sleep(time.Second)
 		}
-		if useNbdDriver {
+		if pathType == "nbd" {
 			if devicePath, found := getNbdDevFromImageAndPool(pool, image); found {
 				return devicePath, true
 			}
@@ -228,6 +229,21 @@ func execRbdMap(b rbdMounter, rbdCmd string, mon string) ([]byte, error) {
 		return b.exec.Run(rbdCmd,
 			"map", imgPath, "--id", b.Id, "-m", mon, "-k", b.Keyring)
 	}
+}
+
+// check if rbd-nbd tools are installed
+func checkRbdNbdTools(e mount.Exec) bool {
+	_, err := e.Run("modprobe", "nbd")
+	if err != nil {
+		glog.V(5).Infof("rbd-nbd: nbd modprobe failed with error %v", err)
+		return false
+	}
+	if _, err := e.Run("rbd-nbd", "--version"); err != nil {
+		glog.V(5).Infof("rbd-nbd: getting rbd-nbd version failed with error %v", err)
+		return false
+	}
+	glog.V(3).Infof("rbd-nbd tools were found.")
+	return true
 }
 
 // Make a directory like /var/lib/kubelet/plugins/kubernetes.io/rbd/mounts/pool-image-image.
@@ -352,31 +368,23 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 		}
 	}
 
-	// If rbd-nbd tools are installed, we will try to map as a nbd device first.
-	nbdToolsFound := false
-	_, err = b.exec.Run("modprobe", "nbd")
-	if err != nil {
-		glog.V(5).Infof("rbd-nbd: nbd modprobe failed with error %v", err)
-	} else if _, err := b.exec.Run("rbd-nbd", "--version"); err != nil {
-		glog.V(5).Infof("rbd-nbd: getting rbd-nbd version failed with error %v", err)
-	} else {
-		glog.V(3).Infof("rbd-nbd tools were found. Attempting to map using rbd-nbd")
-		nbdToolsFound = true
-	}
+	// If rbd-nbd tools are found, we will fallback to it should the default krbd driver fail
+	foundRbdNbd := false
 
-	var devicePath string
-	var mapped bool
-	// The code below attempts to determine which, if any driver, has mapped the device.
-	if nbdToolsFound {
-		// Evalute whether this device was mapped with rbd-nbd.
-		devicePath, mapped = waitForPath(b.Pool, b.Image, 1 /*maxRetries*/, true /*useNbdDriver*/)
-	}
+	devicePath, mapped := waitForPath(b.Pool, b.Image, 1, "rbd")
 	if !mapped {
-		// Evalute whether this device was mapped with rbd.
-		devicePath, mapped = waitForPath(b.Pool, b.Image, 1 /*maxRetries*/, false /*useNbdDriver*/)
+		foundRbdNbd := checkRbdNbdTools(b.exec)
+		if foundRbdNbd {
+			devicePath, mapped = waitForPath(b.Pool, b.Image, 1 , "nbd")
+		}
 	}
 
 	if !mapped {
+		_, err = b.exec.Run("modprobe", "rbd")
+		if err != nil {
+			glog.Warningf("rbd: failed to load rbd kernel module:%v", err)
+		}
+
 		// Currently, we don't acquire advisory lock on image, but for backward
 		// compatibility, we need to check if the image is being used by nodes running old kubelet.
 		// osd_client_watch_timeout defaults to 30 seconds, if the watcher stays active longer than 30 seconds,
@@ -405,29 +413,24 @@ func (util *RBDUtil) AttachDisk(b rbdMounter) (string, error) {
 		mon := util.kernelRBDMonitorsOpt(b.Mon)
 		glog.V(1).Infof("rbd: map mon %s", mon)
 
-		errList := []error{}
-		if nbdToolsFound {
+		output, err = execRbdMap(b, "rbd", mon)
+		if err != nil {
+			glog.V(1).Infof("rbd: map error %v, rbd output: %s", err, string(output))
+			if !foundRbdNbd {
+				return "", fmt.Errorf("rbd: map failed %v, rbd output: %s", err, string(output))
+			}
+			glog.V(3).Infof("rbd-nbd tools present. Retrying failed rbd map using rbd-nbd.")
+			errList := []error{err}
+			outputList := output
 			output, err = execRbdMap(b, "rbd-nbd", mon)
 			if err != nil {
-				glog.Infof("rbd-nbd: map error %v, rbd-nbd output: %s", err, string(output))
-				glog.V(4).Info("will retry using rbd after rbd-nbd failure")
 				errList = append(errList, err)
-			} else {
-				devicePath, mapped = waitForPath(b.Pool, b.Image, 10 /*maxRetries*/, true /*useNbdDriver*/)
+				outputList = append(outputList, output...)
+				return "", fmt.Errorf("rbd: map failed %v, rbd output: %s", errors.NewAggregate(errList), string(outputList))
 			}
-		}
-		if !mapped {
-			_, err = b.exec.Run("modprobe", "rbd")
-			if err != nil {
-				glog.Warningf("rbd: failed to load rbd kernel module: %v", err)
-			}
-			output, err = execRbdMap(b, "rbd", mon)
-			if err != nil {
-				glog.V(1).Infof("rbd: map error %v, rbd output: %s", err, string(output))
-				errList = append(errList, err)
-				return "", fmt.Errorf("rbd: map failed %v, rbd output: %s", errors.NewAggregate(errList), string(output))
-			}
-			devicePath, mapped = waitForPath(b.Pool, b.Image, 10 /*maxRetries*/, false /*useNbdDriver*/)
+			devicePath, mapped = waitForPath(b.Pool, b.Image, 10 /*maxRetries*/, "nbd")
+		} else {
+			devicePath, mapped = waitForPath(b.Pool, b.Image, 10 /*maxRetries*/, "rbd")
 		}
 		if !mapped {
 			return "", fmt.Errorf("Could not map image %s/%s, Timeout after 10s", b.Pool, b.Image)

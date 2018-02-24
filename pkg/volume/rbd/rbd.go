@@ -39,7 +39,7 @@ import (
 )
 
 var (
-	supportedFeatures = sets.NewString("layering")
+	defaultSupportedFeatures = sets.NewString("layering")
 )
 
 // This is the primary entrypoint for volume plugins.
@@ -586,6 +586,9 @@ func (r *rbdVolumeProvisioner) Provision() (*v1.PersistentVolume, error) {
 	imageFormat := rbdImageFormat2
 	fstype := ""
 
+	// rbd-nbd uses librbd directly and should support all available features in  librbd
+	acceptAllImageFeatures := checkRbdNbdTools(r.exec)
+
 	for k, v := range r.options.Parameters {
 		switch dstrings.ToLower(k) {
 		case "monitors":
@@ -614,8 +617,8 @@ func (r *rbdVolumeProvisioner) Provision() (*v1.PersistentVolume, error) {
 		case "imagefeatures":
 			arr := dstrings.Split(v, ",")
 			for _, f := range arr {
-				if !supportedFeatures.Has(f) {
-					return nil, fmt.Errorf("invalid feature %q for volume plugin %s, supported features are: %v", f, r.plugin.GetPluginName(), supportedFeatures)
+				if !defaultSupportedFeatures.Has(f) && !acceptAllImageFeatures {
+					return nil, fmt.Errorf("invalid feature %q for volume plugin %s, supported features are: %v", f, r.plugin.GetPluginName(), defaultSupportedFeatures)
 				} else {
 					r.imageFeatures = append(r.imageFeatures, f)
 				}
