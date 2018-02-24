@@ -81,7 +81,7 @@ type PersistentVolumeConfig struct {
 	Labels           labels.Set
 	StorageClassName string
 	NodeAffinity     *v1.VolumeNodeAffinity
-	VolumeMode       v1.PersistentVolumeMode
+	VolumeMode       *v1.PersistentVolumeMode
 }
 
 // PersistentVolumeClaimConfig is consumed by MakePersistentVolumeClaim() to generate a PVC object.
@@ -93,7 +93,7 @@ type PersistentVolumeClaimConfig struct {
 	Annotations      map[string]string
 	Selector         *metav1.LabelSelector
 	StorageClassName *string
-	VolumeMode       v1.PersistentVolumeMode
+	VolumeMode       *v1.PersistentVolumeMode
 }
 
 // Clean up a pv and pvc in a single pv/pvc test case.
@@ -605,8 +605,10 @@ func MakePersistentVolume(pvConfig PersistentVolumeConfig) *v1.PersistentVolume 
 			ClaimRef:         claimRef,
 			StorageClassName: pvConfig.StorageClassName,
 			NodeAffinity:     pvConfig.NodeAffinity,
-			VolumeMode:       &pvConfig.VolumeMode,
 		},
+	}
+	if pvConfig.VolumeMode != nil {
+		pv.Spec.VolumeMode = pvConfig.VolumeMode
 	}
 	return pv
 }
@@ -623,7 +625,7 @@ func MakePersistentVolumeClaim(cfg PersistentVolumeClaimConfig, ns string) *v1.P
 		cfg.AccessModes = append(cfg.AccessModes, v1.ReadWriteOnce, v1.ReadOnlyMany, v1.ReadOnlyMany)
 	}
 
-	return &v1.PersistentVolumeClaim{
+	pvc := &v1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "pvc-",
 			Namespace:    ns,
@@ -638,9 +640,12 @@ func MakePersistentVolumeClaim(cfg PersistentVolumeClaimConfig, ns string) *v1.P
 				},
 			},
 			StorageClassName: cfg.StorageClassName,
-			VolumeMode:       &cfg.VolumeMode,
 		},
 	}
+	if cfg.VolumeMode != nil {
+		pvc.Spec.VolumeMode = cfg.VolumeMode
+	}
+	return pvc
 }
 
 func createPDWithRetry(zone string) (string, error) {
@@ -877,11 +882,12 @@ func MakeSecPod(ns string, pvclaims []*v1.PersistentVolumeClaim, isPrivileged bo
 	var volumes = make([]v1.Volume, len(pvclaims))
 	for index, pvclaim := range pvclaims {
 		volumename := fmt.Sprintf("volume%v", index+1)
-		if *pvclaim.Spec.VolumeMode == v1.PersistentVolumeFilesystem {
-			volumeMounts = append(volumeMounts, v1.VolumeMount{Name: volumename, MountPath: "/mnt/" + volumename})
-		} else if *pvclaim.Spec.VolumeMode == v1.PersistentVolumeBlock {
+		if pvclaim.Spec.VolumeMode != nil && *pvclaim.Spec.VolumeMode == v1.PersistentVolumeBlock {
 			volumeDevices = append(volumeDevices, v1.VolumeDevice{Name: volumename, DevicePath: "/mnt/" + volumename})
+		} else {
+			volumeMounts = append(volumeMounts, v1.VolumeMount{Name: volumename, MountPath: "/mnt/" + volumename})
 		}
+
 		volumes[index] = v1.Volume{Name: volumename, VolumeSource: v1.VolumeSource{PersistentVolumeClaim: &v1.PersistentVolumeClaimVolumeSource{ClaimName: pvclaim.Name, ReadOnly: false}}}
 	}
 	podSpec.Spec.Containers[0].VolumeMounts = volumeMounts
