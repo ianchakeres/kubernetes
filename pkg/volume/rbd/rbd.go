@@ -39,7 +39,7 @@ import (
 )
 
 var (
-	supportedFeatures = sets.NewString("layering")
+	krbdSupportedFeatures = sets.NewString("layering")
 )
 
 // This is the primary entrypoint for volume plugins.
@@ -614,8 +614,10 @@ func (r *rbdVolumeProvisioner) Provision() (*v1.PersistentVolume, error) {
 		case "imagefeatures":
 			arr := dstrings.Split(v, ",")
 			for _, f := range arr {
-				if !supportedFeatures.Has(f) {
-					return nil, fmt.Errorf("invalid feature %q for volume plugin %s, supported features are: %v", f, r.plugin.GetPluginName(), supportedFeatures)
+				// krbd does not support all features in imageFormat2
+				// rbd-nbd, if present,  uses librbd directly and should support all available features
+				if !krbdSupportedFeatures.Has(f) && !checkRbdNbdTools(r.exec) {
+					return nil, fmt.Errorf("invalid feature %q for volume plugin %s, supported features are: %v", f, r.plugin.GetPluginName(), krbdSupportedFeatures)
 				} else {
 					r.imageFeatures = append(r.imageFeatures, f)
 				}
